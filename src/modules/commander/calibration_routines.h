@@ -57,7 +57,7 @@ int sphere_fit_least_squares(const float x[], const float y[], const float z[],
 			     float *sphere_radius);
 
 // FIXME: Change the name
-static const unsigned max_accel_sens = 3;
+static const unsigned max_accel_sens = 3;//最大加速度计传感器个数
 
 // The order of these cannot change since the calibration calculations depend on them in this order
 enum detect_orientation_return {
@@ -83,6 +83,7 @@ enum detect_orientation_return detect_orientation(orb_advert_t *mavlink_log_pub,
 ///	@param orientation Orientation to return string for, "error" if buffer is too small
 const char* detect_orientation_str(enum detect_orientation_return orientation);
 
+//校准的返回值
 enum calibrate_return {
 	calibrate_return_ok,
 	calibrate_return_error,

@@ -233,6 +233,12 @@ int sphere_fit_least_squares(const float x[], const float y[], const float z[],
 	return 0;
 }
 
+/**************************************************************
+ *
+ *      校准方向的检测：
+ *                  6个方向(上下，左右，前后)，确定在哪个方向
+ */
+
 enum detect_orientation_return detect_orientation(orb_advert_t *mavlink_log_pub, int cancel_sub, int accel_sub, bool lenient_still_position)
 {
 	const unsigned ndim = 3;
@@ -260,20 +266,26 @@ enum detect_orientation_return detect_orientation(orb_advert_t *mavlink_log_pub,
 
 	unsigned poll_errcount = 0;
 
+/************************************************************************
+ *
+ *
+ */
 	while (true) {
 		/* wait blocking for new data */
 		int poll_ret = px4_poll(fds, 1, 1000);
 
 		if (poll_ret) {
+	//copy传感器数据
 			orb_copy(ORB_ID(sensor_combined), accel_sub, &sensor);
 			t = hrt_absolute_time();
+	//获得当前周期dt，单位：s
 			float dt = (t - t_prev) / 1000000.0f;
 			t_prev = t;
-			float w = dt / ema_len;
+			float w = dt / ema_len;  //=2*dt
 
-			for (unsigned i = 0; i < ndim; i++) {
+			for (unsigned i = 0; i < ndim; i++) {          //ndim=3
 
-				float di = sensor.accelerometer_m_s2[i];
+				float di = sensor.accelerometer_m_s2[i];   //加速度计的值
 
 				float d = di - accel_ema[i];
 				accel_ema[i] += d * w;
@@ -322,11 +334,11 @@ enum detect_orientation_return detect_orientation(orb_advert_t *mavlink_log_pub,
 		} else if (poll_ret == 0) {
 			poll_errcount++;
 		}
-
+	//超时
 		if (t > t_timeout) {
 			poll_errcount++;
 		}
-
+	//过多数据超时，则校准失败
 		if (poll_errcount > 1000) {
 			calibration_log_critical(mavlink_log_pub, CAL_ERROR_SENSOR_MSG);
 			return DETECT_ORIENTATION_ERROR;
@@ -374,6 +386,11 @@ enum detect_orientation_return detect_orientation(orb_advert_t *mavlink_log_pub,
 	return DETECT_ORIENTATION_ERROR;	// Can't detect orientation
 }
 
+/***********************************************
+ *
+ *      检测当前方向
+ */
+
 const char* detect_orientation_str(enum detect_orientation_return orientation)
 {
 	static const char* rgOrientationStrs[] = {
@@ -389,17 +406,24 @@ const char* detect_orientation_str(enum detect_orientation_return orientation)
 	return rgOrientationStrs[orientation];
 }
 
+/**************************************
+ *
+ *      基于每个方向的校准：
+ *
+ *      calibrate_from_orientation(mavlink_log_pub, cancel_sub, data_collected, accel_calibration_worker, &worker_data, false /* normal still */)
+ */
+
 calibrate_return calibrate_from_orientation(orb_advert_t *mavlink_log_pub,
 					    int		cancel_sub,
-					    bool	side_data_collected[detect_orientation_side_count],
-					    calibration_from_orientation_worker_t calibration_worker,
-					    void*	worker_data,
+					    bool	side_data_collected[detect_orientation_side_count],  //6个方向
+					    calibration_from_orientation_worker_t calibration_worker,  //函数，分别采样加速度计的三个轴数据的平均值
+					    void*	worker_data,      //结构体
 					    bool	lenient_still_position)
 {
 	calibrate_return result = calibrate_return_ok;
 
 	// Setup subscriptions to onboard accel sensor
-
+//订阅数据
 	int sub_accel = orb_subscribe(ORB_ID(sensor_combined));
 	if (sub_accel < 0) {
 		calibration_log_critical(mavlink_log_pub, CAL_QGC_FAILED_MSG, "No onboard accel");
@@ -408,13 +432,20 @@ calibrate_return calibrate_from_orientation(orb_advert_t *mavlink_log_pub,
 
 	unsigned orientation_failures = 0;
 
+/*****************************************************
+ *
+ *
+ */
 	// Rotate through all requested orientation
 	while (true) {
+
+	//取消校准，则退出函数
 		if (calibrate_cancel_check(mavlink_log_pub, cancel_sub)) {
 			result = calibrate_return_cancelled;
 			break;
 		}
 
+	//5、6个方向校准失败，退出函数
 		if (orientation_failures > 4) {
 			result = calibrate_return_error;
 			calibration_log_critical(mavlink_log_pub, CAL_QGC_FAILED_MSG, "timeout: no motion");
@@ -423,41 +454,48 @@ calibrate_return calibrate_from_orientation(orb_advert_t *mavlink_log_pub,
 
 		unsigned int side_complete_count = 0;
 
-		// Update the number of completed sides
+		// Update the number of completed sides             方向数：detect_orientation_side_count=6
+	//已完成校准的方向计数，0-6个
 		for (unsigned i = 0; i < detect_orientation_side_count; i++) {
 			if (side_data_collected[i]) {
 				side_complete_count++;
 			}
 		}
-
+	//已完成校准的方向计数==总共的方向数：6，则说明校准完成，退出函数
 		if (side_complete_count == detect_orientation_side_count) {
 			// We have completed all sides, move on
 			break;
 		}
-
+	//通知用户哪一个方向还未校准，并发到上位机上
 		/* inform user which orientations are still needed */
 		char pendingStr[80];
 		pendingStr[0] = 0;
 
 		for (unsigned int cur_orientation=0; cur_orientation<detect_orientation_side_count; cur_orientation++) {
 			if (!side_data_collected[cur_orientation]) {
+		//strncat(a,b,n);在字符串a的结尾处追加字符串b的 前n个字符
 				strncat(pendingStr, " ", sizeof(pendingStr) - 1);
 				strncat(pendingStr, detect_orientation_str((enum detect_orientation_return)cur_orientation), sizeof(pendingStr) - 1);
 			}
 		}
 		calibration_log_info(mavlink_log_pub, "[cal] pending:%s", pendingStr);
-		usleep(20000);
+		usleep(20000);//把进程挂起一端时间，单位：us
 		calibration_log_info(mavlink_log_pub, "[cal] hold vehicle still on a pending side");
 		usleep(20000);
-		enum detect_orientation_return orient = detect_orientation(mavlink_log_pub, cancel_sub, sub_accel, lenient_still_position);
 
+/*********************校准方向的检测,返回值：方向*********************/
+
+		enum detect_orientation_return orient = detect_orientation(mavlink_log_pub, cancel_sub, sub_accel, lenient_still_position);
+/**************************************************************/
+
+	//检测方向失败,退出继续执行
 		if (orient == DETECT_ORIENTATION_ERROR) {
 			orientation_failures++;
 			calibration_log_info(mavlink_log_pub, "[cal] detected motion, hold still...");
 			usleep(20000);
 			continue;
 		}
-
+	//通知用户此方向已经校准完毕，退出继续执行
 		/* inform user about already handled side */
 		if (side_data_collected[orient]) {
 			orientation_failures++;
@@ -472,8 +510,11 @@ calibrate_return calibrate_from_orientation(orb_advert_t *mavlink_log_pub,
 		usleep(20000);
 		orientation_failures = 0;
 
-		// Call worker routine
+	/*********重新采样某方向的加速度计三轴数据，并保存下来**********/// Call worker routine
+
 		result = calibration_worker(orient, cancel_sub, worker_data);
+	/*******************************************/
+
 		if (result != calibrate_return_ok ) {
 			break;
 		}
@@ -482,7 +523,7 @@ calibrate_return calibrate_from_orientation(orb_advert_t *mavlink_log_pub,
 		usleep(20000);
 		calibration_log_info(mavlink_log_pub, CAL_QGC_SIDE_DONE_MSG, detect_orientation_str(orient));
 		usleep(20000);
-
+	//该方向完成校准，可以转到下一个面
 		// Note that this side is complete
 		side_data_collected[orient] = true;
 		tune_neutral(true);

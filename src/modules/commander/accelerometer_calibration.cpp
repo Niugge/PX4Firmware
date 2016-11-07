@@ -59,14 +59,14 @@
  *
  * accel_corr_ref[i] = accel_T * (accel_raw_ref[i] - accel_offs), i = 0...5
  *
- * 6 reference vectors * 3 axes = 18 equations
- * 9 (accel_T) + 3 (accel_offs) = 12 unknown constants
+ * 6 reference vectors * 3 axes = 18 equations                  18个方程
+ * 9 (accel_T) + 3 (accel_offs) = 12 unknown constants          12个不确定的常量
  *
- * Find accel_offs
+ * Find accel_offs  求偏移量
  *
  * accel_offs[i] = (accel_raw_ref[i*2][i] + accel_raw_ref[i*2+1][i]) / 2
  *
- * Find accel_T
+ * Find accel_T     /****************求3*3的矩阵*******************************************
  *
  * 9 unknown constants
  * need 9 equations -> use 3 of 6 measurements -> 3 * 3 = 9 equations
@@ -94,11 +94,11 @@
  *     | a[2][0]  a[2][1]  a[2][2] |
  *     [ a[4][0]  a[4][1]  a[4][2] ]
  *
- * x = A^-1 * b
+ * x = A^-1 * b         //A^-1=（A的矩阵求逆）
  *
  * accel_T = A^-1 * g
  * g = 9.80665
- *
+ **********************************************************************************
  * ===== Rotation =====
  *
  * Calibrating using model:
@@ -166,22 +166,33 @@ int mat_invert3(float src[3][3], float dst[3][3]);
 calibrate_return calculate_calibration_values(unsigned sensor, float (&accel_ref)[max_accel_sens][detect_orientation_side_count][3], float (&accel_T)[max_accel_sens][3][3], float (&accel_offs)[max_accel_sens][3], float g);
 
 /// Data passed to calibration worker routine
+
+/*************************
+ *
+ *      传感器工作数组
+ */
 typedef struct  {
 	orb_advert_t	*mavlink_log_pub;
-	unsigned	done_count;
-	int		subs[max_accel_sens];
-	float		accel_ref[max_accel_sens][detect_orientation_side_count][3];
+	unsigned	done_count;        //啥
+	int		subs[max_accel_sens];  //句柄
+	float		accel_ref[max_accel_sens][detect_orientation_side_count][3];   //三轴数据：accel_ref[3][6][3]
 } accel_worker_data_t;
+
+/************************************************************
+ *
+ *          加速度计校准
+ */
 
 int do_accel_calibration(orb_advert_t *mavlink_log_pub)
 {
 #if !defined(__PX4_QURT) && !defined(__PX4_POSIX_EAGLE) && !defined(__PX4_POSIX_RPI2)
 	int fd;
 #endif
-
+//给上位机发送开始校准信息
 	calibration_log_info(mavlink_log_pub, CAL_QGC_STARTED_MSG, sensor_name);
 
 	struct accel_calibration_s accel_scale;
+//偏移量和比例复位
 	accel_scale.x_offset = 0.0f;
 	accel_scale.x_scale = 1.0f;
 	accel_scale.y_offset = 0.0f;
@@ -193,25 +204,33 @@ int do_accel_calibration(orb_advert_t *mavlink_log_pub)
 
 	char str[30];
 
-	/* reset all sensors */
+/***********************
+ *
+ *      复位传感器
+ */
+	/* reset all sensors */  //最多的加速度计传感器个数：max_accel_sens=3
 	for (unsigned s = 0; s < max_accel_sens; s++) {
 #if !defined(__PX4_QURT) && !defined(__PX4_POSIX_EAGLE) && !defined(__PX4_POSIX_RPI2)
 		sprintf(str, "%s%u", ACCEL_BASE_DEVICE_PATH, s);
 		/* reset all offsets to zero and all scales to one */
+/***********打开加速度计设备端口*********/
 		fd = px4_open(str, 0);
 
 		if (fd < 0) {
 			continue;
 		}
+/*******设备端口返回fd****************/
 
 		device_id[s] = px4_ioctl(fd, DEVIOCGDEVICEID, 0);
 
 		res = px4_ioctl(fd, ACCELIOCSSCALE, (long unsigned int)&accel_scale);
-		px4_close(fd);
+		px4_close(fd);//干嘛的
 
+//res=OK，代表传感器端口控制成功
 		if (res != OK) {
 			calibration_log_critical(mavlink_log_pub, CAL_ERROR_RESET_CAL_MSG, s);
 		}
+//下面应该不用管
 #else
 		(void)sprintf(str, "CAL_ACC%u_XOFF", s);
 		res = param_set(param_find(str), &accel_scale.x_offset);
@@ -246,13 +265,17 @@ int do_accel_calibration(orb_advert_t *mavlink_log_pub)
 #endif
 	}
 
-	float accel_offs[max_accel_sens][3];
-	float accel_T[max_accel_sens][3][3];
-	unsigned active_sensors;
+	float accel_offs[max_accel_sens][3];   //加速度计3个偏移量
+	float accel_T[max_accel_sens][3][3];    //3*3的矩阵
+	unsigned active_sensors;    //啥
 
 	/* measure and calculate offsets & scales */
 	if (res == OK) {
+
+	/************************计算校准参数（偏移量和比例因子）**************************/
+
 		calibrate_return cal_return = do_accel_calibration_measurements(mavlink_log_pub, accel_offs, accel_T, &active_sensors);
+	/************************************************************************/
 		if (cal_return == calibrate_return_cancelled) {
 			// Cancel message already displayed, nothing left to do
 			return ERROR;
@@ -287,12 +310,18 @@ int do_accel_calibration(orb_advert_t *mavlink_log_pub)
 		math::Matrix<3, 3> accel_T_mat(accel_T[i]);
 		math::Matrix<3, 3> accel_T_rotated = board_rotation_t * accel_T_mat * board_rotation;
 
+	/************************************
+	 *
+	 *      偏移量：    offset
+	 *      比例因子：scale
+	 */
 		accel_scale.x_offset = accel_offs_rotated(0);
 		accel_scale.x_scale = accel_T_rotated(0, 0);
 		accel_scale.y_offset = accel_offs_rotated(1);
 		accel_scale.y_scale = accel_T_rotated(1, 1);
 		accel_scale.z_offset = accel_offs_rotated(2);
 		accel_scale.z_scale = accel_T_rotated(2, 2);
+	/**********************************/
 
 		bool failed = false;
 
@@ -370,15 +399,20 @@ int do_accel_calibration(orb_advert_t *mavlink_log_pub)
 	return res;
 }
 
+/**************************************************
+ *
+ *      采样：加速度计的三轴数据值并保存下来
+ */
+
 static calibrate_return accel_calibration_worker(detect_orientation_return orientation, int cancel_sub, void* data)
 {
 	const unsigned samples_num = 750;
 	accel_worker_data_t* worker_data = (accel_worker_data_t*)(data);
-
+//给上位机发送信息：方向(上下、左右、前后)
 	calibration_log_info(worker_data->mavlink_log_pub, "[cal] Hold still, measuring %s side", detect_orientation_str(orientation));
-
+//采样,保存
 	read_accelerometer_avg(worker_data->subs, worker_data->accel_ref, orientation, samples_num);
-
+//方向的三个数据发到上位机
 	calibration_log_info(worker_data->mavlink_log_pub, "[cal] %s side result: [%8.4f %8.4f %8.4f]", detect_orientation_str(orientation),
 				     (double)worker_data->accel_ref[0][orientation][0],
 				     (double)worker_data->accel_ref[0][orientation][1],
@@ -389,6 +423,14 @@ static calibrate_return accel_calibration_worker(detect_orientation_return orien
 
 	return calibrate_return_ok;
 }
+
+/*****************************************************
+ *
+ *  求：
+ *      偏移量： accel_offs[3]
+ *      矩阵：     accel_T[3][3]
+ *      active_sensors:激活的加速度计个数
+ */
 
 calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub, float (&accel_offs)[max_accel_sens][3], float (&accel_T)[max_accel_sens][3][3], unsigned *active_sensors)
 {
@@ -401,9 +443,11 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 	worker_data.mavlink_log_pub = mavlink_log_pub;
 	worker_data.done_count = 0;
 
+//6个方向
 	bool data_collected[detect_orientation_side_count] = { false, false, false, false, false, false };
 
 	// Initialize subs to error condition so we know which ones are open and which are not
+//传感器可用复位
 	for (size_t i=0; i<max_accel_sens; i++) {
 		worker_data.subs[i] = -1;
 	}
@@ -411,6 +455,10 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 	uint64_t timestamps[max_accel_sens];
 
 	// We should not try to subscribe if the topic doesn't actually exist and can be counted.
+/******************************************
+ *
+ *  推断哪个加速度计激活，可用
+ */
 	const unsigned accel_count = orb_group_count(ORB_ID(sensor_accel));
 	for (unsigned i = 0; i < accel_count; i++) {
 		worker_data.subs[i] = orb_subscribe_multi(ORB_ID(sensor_accel), i);
@@ -425,7 +473,7 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 		orb_copy(ORB_ID(sensor_accel), worker_data.subs[i], &accel_report);
 		device_id[i] = accel_report.device_id;
 #endif
-		/* store initial timestamp - used to infer which sensors are active */
+		/* store initial timestamp - used to infer推断 which sensors are active */
 		struct accel_report arp = {};
 		(void)orb_copy(ORB_ID(sensor_accel), worker_data.subs[i], &arp);
 		timestamps[i] = arp.timestamp;
@@ -445,13 +493,22 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 			break;
 		}
 	}
+/************************************/
 
+/*************************************************************
+ *
+ *          基于方向校准：
+ *                      同时调用采样函数：accel_calibration_worker()
+ */
 	if (result == calibrate_return_ok) {
 		int cancel_sub = calibrate_cancel_subscribe();
+//data_collected：6个方向
 		result = calibrate_from_orientation(mavlink_log_pub, cancel_sub, data_collected, accel_calibration_worker, &worker_data, false /* normal still */);
 		calibrate_cancel_unsubscribe(cancel_sub);
 	}
+/*************************************/
 
+/********关闭所有的激活的加速度计********************/
 	/* close all subscriptions */
 	for (unsigned i = 0; i < max_accel_sens; i++) {
 		if (worker_data.subs[i] >= 0) {
@@ -464,7 +521,12 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 			px4_close(worker_data.subs[i]);
 		}
 	}
+/********************************************/
 
+/************************************************************************
+ *
+ *      计算偏移量accel_offs[3]和矩阵accel_T[3x3]
+ */
 	if (result == calibrate_return_ok) {
 		/* calculate offsets and transform matrix */
 		for (unsigned i = 0; i < (*active_sensors); i++) {
@@ -480,12 +542,22 @@ calibrate_return do_accel_calibration_measurements(orb_advert_t *mavlink_log_pub
 	return result;
 }
 
+/***********************************************************
+ *
+ *      采样：读取加速度计的值750次，然后求平均值
+ *
+ *      read_accelerometer_avg(worker_data->subs, worker_data->accel_ref, orientation, samples_num);
+ */
+
 /*
  * Read specified number of accelerometer samples, calculate average and dispersion.
  */
 calibrate_return read_accelerometer_avg(int (&subs)[max_accel_sens], float (&accel_avg)[max_accel_sens][detect_orientation_side_count][3], unsigned orient, unsigned samples_num)
 {
 	/* get total sensor board rotation matrix */
+
+//param_t就是unsigned int
+
 	param_t board_rotation_h = param_find("SENS_BOARD_ROT");
 	param_t board_offset_x = param_find("SENS_BOARD_X_OFF");
 	param_t board_offset_y = param_find("SENS_BOARD_Y_OFF");
@@ -517,15 +589,16 @@ calibrate_return read_accelerometer_avg(int (&subs)[max_accel_sens], float (&acc
 		fds[i].events = POLLIN;
 	}
 
-	unsigned counts[max_accel_sens] = { 0 };
-	float accel_sum[max_accel_sens][3];
+	unsigned counts[max_accel_sens] = { 0 };    //采样次数
+	float accel_sum[max_accel_sens][3];         //采样的数据的求和
 	memset(accel_sum, 0, sizeof(accel_sum));
 
-	unsigned errcount = 0;
+	unsigned errcount = 0;                      //错误的采样数据
 
+/**********************750次采样********************/
 	/* use the first sensor to pace the readout, but do per-sensor counts */
 	while (counts[0] < samples_num) {
-		int poll_ret = px4_poll(&fds[0], max_accel_sens, 1000);
+		int poll_ret = px4_poll(&fds[0], max_accel_sens, 1000);  //延时
 
 		if (poll_ret > 0) {
 
@@ -534,9 +607,9 @@ calibrate_return read_accelerometer_avg(int (&subs)[max_accel_sens], float (&acc
 				orb_check(subs[s], &changed);
 
 				if (changed) {
-
+	//copy加速度计传感器的数据
 					struct accel_report arp;
-					orb_copy(ORB_ID(sensor_accel), subs[s], &arp);
+					orb_copy(ORB_ID(+), subs[s], &arp);
 
 					accel_sum[s][0] += arp.x;
 					accel_sum[s][1] += arp.y;
@@ -550,19 +623,21 @@ calibrate_return read_accelerometer_avg(int (&subs)[max_accel_sens], float (&acc
 			errcount++;
 			continue;
 		}
-
+	//采样的错误数据大于75，则校准失败
 		if (errcount > samples_num / 10) {
 			return calibrate_return_error;
 		}
 	}
+/********************750次采样***************************/
 
+//机体系与传感器系的关系:数据转换
 	// rotate sensor measurements from body frame into sensor frame using board rotation matrix
 	for (unsigned i = 0; i < max_accel_sens; i++) {
 		math::Vector<3> accel_sum_vec(&accel_sum[i][0]);
 		accel_sum_vec = board_rotation * accel_sum_vec;
 		memcpy(&accel_sum[i][0], &accel_sum_vec.data[0], sizeof(accel_sum[i]));
 	}
-
+/****************750次采样求平均值*************************/
 	for (unsigned s = 0; s < max_accel_sens; s++) {
 		for (unsigned i = 0; i < 3; i++) {
 			accel_avg[s][orient][i] = accel_sum[s][i] / counts[s];
@@ -571,6 +646,11 @@ calibrate_return read_accelerometer_avg(int (&subs)[max_accel_sens], float (&acc
 
 	return calibrate_return_ok;
 }
+
+/*******************************************************
+ *
+ *      3*3矩阵的求逆
+ */
 
 int mat_invert3(float src[3][3], float dst[3][3])
 {
@@ -595,13 +675,23 @@ int mat_invert3(float src[3][3], float dst[3][3])
 	return OK;
 }
 
+/******************************************************************************
+ *
+ *      计算：
+ *          偏移量：    accel_offs[3]
+ *          矩阵：         accel_T[3x3]
+ */
+
 calibrate_return calculate_calibration_values(unsigned sensor, float (&accel_ref)[max_accel_sens][detect_orientation_side_count][3], float (&accel_T)[max_accel_sens][3][3], float (&accel_offs)[max_accel_sens][3], float g)
 {
 	/* calculate offsets */
+
+/**************两个数的平均值，即偏移量accel_offs[3]***********/
 	for (unsigned i = 0; i < 3; i++) {
 		accel_offs[sensor][i] = (accel_ref[sensor][i * 2][i] + accel_ref[sensor][i * 2 + 1][i]) / 2;
 	}
 
+/*************矩阵：accel_T[3x3]*************************/
 	/* fill matrix A for linear equations system*/
 	float mat_A[3][3];
 	memset(mat_A, 0, sizeof(mat_A));
@@ -613,6 +703,7 @@ calibrate_return calculate_calibration_values(unsigned sensor, float (&accel_ref
 		}
 	}
 
+/*************矩阵：accel_T[3x3]的转置**********/
 	/* calculate inverse matrix for A */
 	float mat_A_inv[3][3];
 
@@ -631,12 +722,18 @@ calibrate_return calculate_calibration_values(unsigned sensor, float (&accel_ref
 	return calibrate_return_ok;
 }
 
+/*****************************************************************
+ *
+ *          水平面的检测
+ */
+
 int do_level_calibration(orb_advert_t *mavlink_log_pub) {
 	const unsigned cal_time = 5;
 	const unsigned cal_hz = 100;
 	unsigned settle_time = 30;
 
 	bool success = false;
+//订阅姿态信息
 	int att_sub = orb_subscribe(ORB_ID(vehicle_attitude));
 	struct vehicle_attitude_s att;
 	memset(&att, 0, sizeof(att));
