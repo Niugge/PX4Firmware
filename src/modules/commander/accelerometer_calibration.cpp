@@ -48,7 +48,7 @@
  *
  * ===== Calibration =====
  *
- * Reference vectors
+ * Reference vectors      ²Î¿¼ÏòÁ¿
  * accel_corr_ref[6][3] = [  g  0  0 ]     // nose up
  *                        | -g  0  0 |     // nose down
  *                        |  0  g  0 |     // left side down
